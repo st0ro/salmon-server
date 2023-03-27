@@ -9,8 +9,9 @@ from tqdm import tqdm
 from norfair import Detection, Tracker, draw_points, draw_boxes
 
 
-INPUT_VIDEO_FILE = "./poolin/a3.mp4"
-OUTPUT_VIDEO_FILE = "./out/a3 tracked.mp4"
+INPUT_VIDEO_FILE = "./poolin/a2.mp4"
+OUTPUT_VIDEO_FILE = "./out/a2 proper.mp4"
+SUBMERGED_THRESHOLD = 0.3
 
 
 def crop(image, box):
@@ -33,14 +34,11 @@ def crop(image, box):
     cropped = image[y_min:y_max, x_min:x_max]
     return cropped
 
-
 def draw_rect(image, box, text, box_color=(255, 255, 255)):
-    height = image.shape[0]
-    width = image.shape[1]
-    y_1 = box[0] * height
-    x_1 = box[1] * width
-    y_2 = box[2] * height
-    x_2 = box[3] * width
+    y_1 = box[0]
+    x_1 = box[1]
+    y_2 = box[2]
+    x_2 = box[3]
     x_center = int((x_1+x_2)/2)
     y_center = int((y_1+y_2)/2)
 
@@ -51,7 +49,6 @@ def draw_rect(image, box, text, box_color=(255, 255, 255)):
                   (x_center+x_size, y_center+y_size), box_color, 1)
     cv2.putText(image, f"{text}", (x_center-x_size, y_center-y_size - 5),
                 cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
-
 
 def centroid(image, box):
     # copied from draw_rect, dont need to optimize since both wont be called
@@ -64,7 +61,6 @@ def centroid(image, box):
     x_center = int((x_1+x_2)/2)
     y_center = int((y_1+y_2)/2)
     return [x_center, y_center]
-
 
 def decoder(predictions):
     if isinstance(predictions, list):
@@ -83,7 +79,7 @@ print("Starting Runker")
 print("Loading models")
 detection_model = tf.keras.models.load_model('./det_model.h5', compile=False)
 class_model = tf.keras.models.load_model('./cla_model.h5', compile=False)
-class_labels = ["submerged", "not submerged"]
+class_labels = ["not submerged", "submerged"]
 print("Models loaded")
 
 print("Loading input file", INPUT_VIDEO_FILE)
@@ -96,7 +92,7 @@ print("Opening output file", OUTPUT_VIDEO_FILE)
 vid_out = cv2.VideoWriter(OUTPUT_VIDEO_FILE, cv2.VideoWriter_fourcc(
     *'mp4v'), vid_fps, (vid_width, vid_height))
 
-tracker = Tracker(distance_function='euclidean', distance_threshold=100)
+tracker = Tracker(distance_function='euclidean', distance_threshold=200)
 
 print("Starting to process video")
 pbar = tqdm(total=vid_frames)
@@ -110,7 +106,6 @@ while True:
         input_arr = tf.keras.applications.mobilenet.preprocess_input(input_arr)
         predictions = detection_model.predict(input_arr, verbose=False)
         boxes, confidence = decoder(predictions)
-
         confidence = [c[1] for c in confidence[0]]
         selected_indices, selected_scores = tf.image.non_max_suppression_with_scores(
             boxes[0],
@@ -122,46 +117,59 @@ while True:
             name=None
         )
 
-        #print(f"Time taken to detect: {time.time()-t} seconds")
-        #new_img = cv2.resize(frame, (int(640/frame.shape[0]*frame.shape[1]), 640))
-        new_img = frame
-        points = []
-        dets = []
+        trackerDets = []
 
         for i in range(len(selected_indices)):
             box = boxes[0][selected_indices[i]]
-            conf = selected_scores[i]
-            crop_img = np.array([crop(frame, box)])
-            input_arr = tf.keras.applications.mobilenet.preprocess_input(
-                crop_img)
-            input_arr = tf.image.resize(input_arr, (128, 128))
-            #prediction = class_model.predict(input_arr, verbose=False)
-            #class_index = np.argmax(prediction[0])
-            #display_string = f"person: {conf:.4f}   {class_labels[class_index]}: {prediction[0][class_index]:.4f}"
-            class_index = 0
-            display_string = "person"
-            # draw_rect(new_img, box, display_string, (0, 0, 255)
-            # if class_index == 0 else (255, 255, 255))
+            y_1 = box[0]
+            x_1 = box[1]
+            y_2 = box[2]
+            x_2 = box[3]
 
-            # change to use bounding boxes
-            cen = centroid(new_img, box)
-            points = np.array([cen, cen])
-            points2 = np.array([[box[1] * vid_width, box[0] * vid_height], [box[3] * vid_width, box[2] * vid_height]])
-            #cv2.putText(new_img, np.array2string(points2), (20, 100),
+            submerged = False
+            decider = 'none'
+            confidence = 0
+
+            #horizontal line test
+            if y_1 > SUBMERGED_THRESHOLD and y_2 > SUBMERGED_THRESHOLD:
+                submerged = True
+                decider = 'line'
+                confidence = 1
+            else:
+                crop_img = np.array([crop(frame, box)])
+                input_arr = tf.keras.applications.mobilenet.preprocess_input(crop_img)
+                input_arr = tf.image.resize(input_arr, (128, 128))
+                prediction = class_model.predict(input_arr, verbose=False)
+                class_index = np.argmax(prediction[0])
+                submerged = bool(class_index == 1)
+                decider = 'model'
+                confidence = prediction[0][class_index]
+
+            points = np.array([[x_1 * vid_width, y_1 * vid_height], [x_2 * vid_width, y_2 * vid_height]])
+            detData = {
+                'submerged': submerged,
+                'decider': decider,
+                'confidence': confidence
+            }
+            trackerDets.append(Detection(points, data=detData))
+
+        tracked = tracker.update(detections=trackerDets)
+        for trackedObj in tracked:
+            est = trackedObj.estimate
+            box = [est[0][1], est[0][0], est[1][1], est[1][0]]
+            col = (0, 0, 255) if trackedObj.last_detection.data['submerged'] else (255, 0, 0)
+            draw_rect(frame, box, f"{'Submerged' if trackedObj.last_detection.data['submerged'] else 'Not Submerged'}", col)
+
+        #cv2.putText(frame, f"{len(tracked)} tracked objects", (20, 60),
                     #cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
-            dets.append(Detection(points2))
-
-        tracked = tracker.update(detections=dets)
-        draw_points(new_img, drawables=tracked)
-        draw_boxes(new_img, drawables=tracked)
-        cv2.putText(new_img, f"{len(tracked)} tracked objects", (20, 60),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
 
         inference_time = time.time()-t
-        cv2.putText(new_img, f"{1 / inference_time:.1f} FPS", (20, 20),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
+        #cv2.putText(frame, f"{1 / inference_time:.1f} FPS", (20, 20),
+                    #cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
 
-        vid_out.write(new_img)
+        #cv2.line(frame, (0, int(vid_height * SUBMERGED_THRESHOLD)), (vid_width, int(vid_height * SUBMERGED_THRESHOLD)), (255, 0, 0), 1)
+
+        vid_out.write(frame)
         pbar.update(1)
     else:
         break

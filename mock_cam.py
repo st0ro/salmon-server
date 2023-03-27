@@ -33,7 +33,7 @@ vid_height = int(vid_in.get(cv2.CAP_PROP_FRAME_HEIGHT))
 vid_frames = int(vid_in.get(cv2.CAP_PROP_FRAME_COUNT))
 vid_fps = int(vid_in.get(cv2.CAP_PROP_FPS))
 
-tracker = Tracker(distance_function='euclidean', distance_threshold=150)
+tracker = Tracker(distance_function='euclidean', distance_threshold=250)
 
 def updateServer(frame, tracked, time, inference_time):
     payload = {}
@@ -141,7 +141,7 @@ while True:
         )
 
         trackerDets = []
-
+        
         for i in range(len(selected_indices)):
             box = boxes[0][selected_indices[i]]
             y_1 = box[0]
@@ -162,10 +162,9 @@ while True:
                 input_arr = tf.image.resize(input_arr, (128, 128))
                 prediction = class_model.predict(input_arr, verbose=False)
                 class_index = np.argmax(prediction[0])
-                submerged = bool(class_index == 0)
+                submerged = bool(class_index == 1)
                 decider = 'model'
 
-            # test bounding boxes
             points = np.array([[x_1 * vid_width, y_1 * vid_height], [x_2 * vid_width, y_2 * vid_height]])
             detData = {
                 'submerged': submerged,
@@ -174,7 +173,8 @@ while True:
             }
             trackerDets.append(Detection(points, data=detData))
 
-        tracked = tracker.update(detections=trackerDets, period=passedFrames - lastFrameNum)
+        #tracked = tracker.update(detections=trackerDets, period=passedFrames - lastFrameNum)
+        tracked = tracker.update(detections=trackerDets)
 
         inference_time = time.time()-t
         lastFrameNum = frameNum

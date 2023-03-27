@@ -27,6 +27,7 @@ def register(threshold):
         "threshold": float(threshold),
         "data": None,
     })
+    print("Camera", str(registeredId), "registered at", request.remote_addr)
     return str(registeredId)
 
 @app.post('/update/<id>')
