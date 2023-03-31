@@ -7,11 +7,15 @@ from ssd_config import priors, center_variance, size_variance
 import time
 from tqdm import tqdm
 from norfair import Detection, Tracker, draw_points, draw_boxes
+import collections
 
 
-INPUT_VIDEO_FILE = "./poolin/a2.mp4"
-OUTPUT_VIDEO_FILE = "./out/a2 proper.mp4"
+INPUT_VIDEO_FILE = "./poolin/ashort2 0.25.mp4"
+OUTPUT_VIDEO_FILE = "./out/ashort2 0.25.mp4"
 SUBMERGED_THRESHOLD = 0.3
+
+BIG_BOX_THRESHOLD = 0.8
+TIME_DEQUE_LEN = 30
 
 
 def crop(image, box):
@@ -46,9 +50,9 @@ def draw_rect(image, box, text, box_color=(255, 255, 255)):
     y_size = int(abs(y_1-y_2)/2)
     # draw a rectangle on the image
     cv2.rectangle(image, (x_center-x_size, y_center-y_size),
-                  (x_center+x_size, y_center+y_size), box_color, 1)
+                  (x_center+x_size, y_center+y_size), box_color, 3)
     cv2.putText(image, f"{text}", (x_center-x_size, y_center-y_size - 5),
-                cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_DUPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
 
 def centroid(image, box):
     # copied from draw_rect, dont need to optimize since both wont be called
@@ -92,7 +96,7 @@ print("Opening output file", OUTPUT_VIDEO_FILE)
 vid_out = cv2.VideoWriter(OUTPUT_VIDEO_FILE, cv2.VideoWriter_fourcc(
     *'mp4v'), vid_fps, (vid_width, vid_height))
 
-tracker = Tracker(distance_function='euclidean', distance_threshold=200)
+tracker = Tracker(distance_function='euclidean', distance_threshold=500)
 
 print("Starting to process video")
 pbar = tqdm(total=vid_frames)
@@ -111,9 +115,9 @@ while True:
             boxes[0],
             confidence,
             100,
-            iou_threshold=0.5,
+            iou_threshold=0.3,
             score_threshold=0.5,
-            soft_nms_sigma=0.5,
+            soft_nms_sigma=0.0,
             name=None
         )
 
@@ -125,6 +129,10 @@ while True:
             x_1 = box[1]
             y_2 = box[2]
             x_2 = box[3]
+
+            # Big box removal/skipping
+            if x_2 - x_1 > BIG_BOX_THRESHOLD or y_2 - y_1 > BIG_BOX_THRESHOLD:
+                continue
 
             submerged = False
             decider = 'none'
@@ -154,20 +162,52 @@ while True:
             trackerDets.append(Detection(points, data=detData))
 
         tracked = tracker.update(detections=trackerDets)
+
         for trackedObj in tracked:
+            # update timing tracks
+            if not hasattr(trackedObj, 'data'):
+                trackedObj.data = {
+                    "first_submerged": 0,
+                    "sub_deque": collections.deque(maxlen=TIME_DEQUE_LEN),
+                    "submerged": False,
+                    "time_submerged": 0
+                }
+
+            que = trackedObj.data["sub_deque"]
+            que.append(1 if trackedObj.last_detection.data['submerged'] else 0)
+            submergedRes = bool((sum(que)/len(que)) > 0.5)
+
+            # first frame submerged
+            if trackedObj.data['submerged'] == False and submergedRes:
+                trackedObj.data["first_submerged"] = 0
+                trackedObj.data["time_submerged"] = 0
+            trackedObj.data["submerged"] = submergedRes
+            timeSub = trackedObj.data["time_submerged"] + 1/30 if submergedRes else 0
+            trackedObj.data["time_submerged"] = timeSub
+
             est = trackedObj.estimate
             box = [est[0][1], est[0][0], est[1][1], est[1][0]]
-            col = (0, 0, 255) if trackedObj.last_detection.data['submerged'] else (255, 0, 0)
-            draw_rect(frame, box, f"{'Submerged' if trackedObj.last_detection.data['submerged'] else 'Not Submerged'}", col)
+            col = (255, 0, 0)
+            if submergedRes:
+                if timeSub < 15:
+                    col = (0, 180, 0)
+                elif timeSub < 30:
+                    col = (0, 255, 255)
+                else:
+                    col = (0, 0, 255)
+            draw_rect(frame, box, f"{'Submerged' if submergedRes else 'Not Submerged'}, {trackedObj.data['time_submerged']:.4f}", col)
 
-        #cv2.putText(frame, f"{len(tracked)} tracked objects", (20, 60),
-                    #cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
+        # number of tracked objects
+        cv2.putText(frame, f"{len(tracked)} tracked objects", (20, 60),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
 
+        # processing FPS
         inference_time = time.time()-t
-        #cv2.putText(frame, f"{1 / inference_time:.1f} FPS", (20, 20),
-                    #cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"{1 / inference_time:.1f} FPS", (20, 20),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
 
-        #cv2.line(frame, (0, int(vid_height * SUBMERGED_THRESHOLD)), (vid_width, int(vid_height * SUBMERGED_THRESHOLD)), (255, 0, 0), 1)
+        # Draw submerged threshold
+        cv2.line(frame, (0, int(vid_height * SUBMERGED_THRESHOLD)), (vid_width, int(vid_height * SUBMERGED_THRESHOLD)), (255, 0, 0), 1)
 
         vid_out.write(frame)
         pbar.update(1)

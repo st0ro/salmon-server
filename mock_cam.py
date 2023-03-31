@@ -14,6 +14,10 @@ from ssd_config import priors, center_variance, size_variance
 import numpy as np
 import base64
 import requests
+import collections
+
+BIG_BOX_THRESHOLD = 0.8
+TIME_DEQUE_LEN = 10
 
 submergedThreshold = (float)(sys.argv[3])
 server_url = sys.argv[1]
@@ -47,10 +51,9 @@ def updateServer(frame, tracked, time, inference_time):
             "y": est[0][1] / vid_height,
             "width": (est[1][0] - est[0][0]) / vid_width,
             "height": (est[1][1] - est[0][1]) / vid_height,
-            "submerged": obj.last_detection.data['submerged'],
-            "decider": obj.last_detection.data['decider'],
-            "time": obj.last_detection.data['time'],
-            "time_submerged": 3
+            "submerged": obj.data['submerged'],
+            "time": obj.data['first_submerged'],
+            "time_submerged": obj.data["time_submerged"]
         })
     payload["tracked"] = trackedlist
 
@@ -134,9 +137,9 @@ while True:
             boxes[0],
             confidence,
             100,
-            iou_threshold=0.5,
+            iou_threshold=0.3,
             score_threshold=0.5,
-            soft_nms_sigma=0.5,
+            soft_nms_sigma=0.0,
             name=None
         )
 
@@ -148,6 +151,10 @@ while True:
             x_1 = box[1]
             y_2 = box[2]
             x_2 = box[3]
+
+            # Big box removal/skipping
+            if x_2 - x_1 > BIG_BOX_THRESHOLD or y_2 - y_1 > BIG_BOX_THRESHOLD:
+                continue
 
             submerged = False
             decider = 'none'
@@ -169,12 +176,32 @@ while True:
             detData = {
                 'submerged': submerged,
                 'decider': decider,
-                'time': frameTime,
             }
             trackerDets.append(Detection(points, data=detData))
 
         #tracked = tracker.update(detections=trackerDets, period=passedFrames - lastFrameNum)
         tracked = tracker.update(detections=trackerDets)
+
+        for trackedObj in tracked:
+            # update timing tracks
+            if not hasattr(trackedObj, 'data'):
+                trackedObj.data = {
+                    "first_submerged": 0,
+                    "sub_deque": collections.deque(maxlen=TIME_DEQUE_LEN),
+                    "submerged": False,
+                    "time_submerged": 0
+                }
+
+            que = trackedObj.data["sub_deque"]
+            que.append(1 if trackedObj.last_detection.data['submerged'] else 0)
+            submergedRes = bool((sum(que)/len(que)) > 0.5)
+
+            # first frame submerged
+            if trackedObj.data['submerged'] == False and submergedRes:
+                trackedObj.data["first_submerged"] = frameTime
+                trackedObj.data["time_submerged"] = 0
+            trackedObj.data["submerged"] = submergedRes
+            trackedObj.data["time_submerged"] = frameTime - trackedObj.data["first_submerged"] if submergedRes else 0
 
         inference_time = time.time()-t
         lastFrameNum = frameNum
