@@ -18,6 +18,7 @@ import collections
 
 BIG_BOX_THRESHOLD = 0.8
 TIME_DEQUE_LEN = 10
+ALERT_TIME = 30
 
 submergedThreshold = (float)(sys.argv[3])
 server_url = sys.argv[1]
@@ -39,7 +40,7 @@ vid_fps = int(vid_in.get(cv2.CAP_PROP_FPS))
 
 tracker = Tracker(distance_function='euclidean', distance_threshold=250)
 
-def updateServer(frame, tracked, time, inference_time):
+def updateServer(frame, tracked, time, inference_time, alerts):
     payload = {}
 
     trackedlist = []
@@ -66,6 +67,8 @@ def updateServer(frame, tracked, time, inference_time):
 
     payload["time"] = time
     payload["inference_time"] = inference_time
+
+    payload["alerts"] = alerts
 
     requests.post(server_url + "/update/" + cam_id, json=payload)
 
@@ -159,13 +162,13 @@ while True:
             submerged = False
             decider = 'none'
 
+            crop_img = crop(frame, box)
             #horizontal line test
             if y_1 > submergedThreshold and y_2 > submergedThreshold:
                 submerged = True
                 decider = 'line'
             else:
-                crop_img = np.array([crop(frame, box)])
-                input_arr = tf.keras.applications.mobilenet.preprocess_input(crop_img)
+                input_arr = tf.keras.applications.mobilenet.preprocess_input(np.array([crop_img]))
                 input_arr = tf.image.resize(input_arr, (128, 128))
                 prediction = class_model.predict(input_arr, verbose=False)
                 class_index = np.argmax(prediction[0])
@@ -176,13 +179,16 @@ while True:
             detData = {
                 'submerged': submerged,
                 'decider': decider,
+                'cropped': crop_img,
             }
             trackerDets.append(Detection(points, data=detData))
 
         #tracked = tracker.update(detections=trackerDets, period=passedFrames - lastFrameNum)
         tracked = tracker.update(detections=trackerDets)
 
-        for trackedObj in tracked:
+        alerts = []
+
+        for index, trackedObj in enumerate(tracked):
             # update timing tracks
             if not hasattr(trackedObj, 'data'):
                 trackedObj.data = {
@@ -201,11 +207,19 @@ while True:
                 trackedObj.data["first_submerged"] = frameTime
                 trackedObj.data["time_submerged"] = 0
             trackedObj.data["submerged"] = submergedRes
+
+            oldTimeSub = trackedObj.data["time_submerged"]
             trackedObj.data["time_submerged"] = frameTime - trackedObj.data["first_submerged"] if submergedRes else 0
+            if oldTimeSub < ALERT_TIME and trackedObj.data["time_submerged"] >= ALERT_TIME:
+                success, im_buf_arr = cv2.imencode('.jpg', trackedObj.last_detection.data["cropped"])
+                alerts.append({
+                    "index": index,
+                    #"image": base64.b64encode(im_buf_arr).decode(),
+                })
 
         inference_time = time.time()-t
         lastFrameNum = frameNum
         
-        updateServer(frame, tracked, frameTime, inference_time)
+        updateServer(frame, tracked, frameTime, inference_time, alerts)
     else:
         print("uh oh")

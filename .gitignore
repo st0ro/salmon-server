@@ -153,3 +153,4 @@ cython_debug/
 
 poolin/
 out/
+server/secret.txt

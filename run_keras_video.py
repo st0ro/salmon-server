@@ -6,7 +6,7 @@ from scipy.special import expit
 from ssd_config import priors, center_variance, size_variance
 import time
 from tqdm import tqdm
-from norfair import Detection, Tracker, draw_points, draw_boxes
+from norfair import Detection, Tracker
 import collections
 
 
