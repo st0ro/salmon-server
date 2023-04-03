@@ -15,6 +15,7 @@ import numpy as np
 import base64
 import requests
 import collections
+import time as thyme
 
 BIG_BOX_THRESHOLD = 0.8
 TIME_DEQUE_LEN = 10
@@ -22,7 +23,8 @@ ALERT_TIME = 30
 
 submergedThreshold = (float)(sys.argv[3])
 server_url = sys.argv[1]
-cam_id = requests.post(server_url + "/register/" + str(submergedThreshold)).text
+session = requests.session()
+cam_id = session.post(server_url + "/register/" + str(submergedThreshold)).text
 print("Registered as Camera", cam_id)
 
 print("Loading models")
@@ -70,7 +72,9 @@ def updateServer(frame, tracked, time, inference_time, alerts):
 
     payload["alerts"] = alerts
 
-    requests.post(server_url + "/update/" + cam_id, json=payload)
+    print("before", thyme.time())
+    session.post(server_url + "/update/" + cam_id, json=payload)
+    print("after", thyme.time())
 
 def crop(image, box):
     height = image.shape[0]

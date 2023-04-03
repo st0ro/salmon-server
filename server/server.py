@@ -5,8 +5,9 @@ import time
 import os
 import base64
 import requests
+from werkzeug.serving import WSGIRequestHandler
 
-PUSHBULLET_ENABLED = True
+PUSHBULLET_ENABLED = False
 
 pushbulletKey = None
 pushbulletMode = False
@@ -92,4 +93,5 @@ def get_css_file(file_name):
 
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
+WSGIRequestHandler.protocol_version = "HTTP/1.1"
 app.run(host='0.0.0.0', port=80, use_reloader=False)
